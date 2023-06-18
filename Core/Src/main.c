@@ -81,6 +81,7 @@ static void MX_IWDG_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM5_Init(void);
+static void ResetHandler(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -186,6 +187,7 @@ int main(void)
   MX_USB_DEVICE_Init();
 
   bl_init();
+  bl_register_reset_callback(ResetHandler);
 
   while (1)
   {
@@ -196,6 +198,32 @@ int main(void)
 
     HAL_IWDG_Refresh(&hiwdg);
   }
+}
+
+static void ResetHandler(void)
+{
+  HAL_IWDG_Refresh(&hiwdg);
+
+  MX_USB_DEVICE_DeInit();
+
+  HAL_TIM_Base_Stop(&htim3);
+  HAL_TIM_Base_Stop(&htim4);
+
+  HAL_TIM_Base_DeInit(&htim3);
+  HAL_TIM_Base_DeInit(&htim4);
+
+  HAL_UART_Abort(&huart1);
+  HAL_UART_Abort(&huart3);
+  HAL_UART_Abort(&huart5);
+
+  HAL_UART_DeInit(&huart1);
+  HAL_UART_DeInit(&huart3);
+  HAL_UART_DeInit(&huart5);
+
+  __HAL_RCC_DMA1_CLK_DISABLE();
+  __HAL_RCC_DMA2_CLK_DISABLE();
+
+  HAL_IWDG_Refresh(&hiwdg);
 }
 
 /**
