@@ -67,3 +67,9 @@ INLINE uint8_t CRC8_Generate(uint8_t *input, uint32_t size)
   return (result & 0xFF) ^ (result >> 8);
 }
 
+INLINE uint32_t CRC32_Generate(uint8_t *input, uint32_t size)
+{
+  uint32_t result = CRC16_Generate(input, size);
+  return result | (~result << 16);
+}
+

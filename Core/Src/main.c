@@ -133,10 +133,6 @@ INLINE void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 int main(void)
 {
-  SCB_EnableICache();
-
-  SCB_EnableDCache();
-
   HAL_Init();
 
   SystemClock_Config();

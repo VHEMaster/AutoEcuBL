@@ -134,7 +134,7 @@ STATIC_INLINE void packager(sGetterHandle* xHandle, const uint8_t* xMsgPtr, uint
 
             if(xHandle->xUart) {
               if(xHandle->xUart->hdmatx) {
-                CacheClean(xHandle->BufTx, aTotLen);
+                //CacheClean(xHandle->BufTx, aTotLen);
                 HAL_UART_Transmit_DMA(xHandle->xUart, xHandle->BufTx, aTotLen);
               }
               else
@@ -184,7 +184,7 @@ STATIC_INLINE void acker(sGetterHandle* xHandle, uint16_t aPacketId, eTransChann
             memcpy(xHandle->BufTx,header,8);
             if(xHandle->xUart) {
               if(xHandle->xUart->hdmatx) {
-                CacheClean(xHandle->BufTx, 8);
+                //CacheClean(xHandle->BufTx, 8);
                 HAL_UART_Transmit_DMA(xHandle->xUart, xHandle->BufTx, 8);
               }
               else
@@ -220,7 +220,7 @@ void xSenderRaw(sGetterHandle *xHandle, eTransChannels xChaDest, const uint8_t* 
 
       if(xHandle->xUart) {
         if(xHandle->xUart->hdmatx) {
-          CacheClean(xHandle->BufTx, xMsgLen);
+          //CacheClean(xHandle->BufTx, xMsgLen);
           HAL_UART_Transmit_DMA(xHandle->xUart, xHandle->BufTx, xMsgLen);
         }
         else
@@ -375,7 +375,7 @@ STATIC_INLINE void parser(sGetterHandle* hHandle, uint32_t xPacketId, uint32_t x
 
         if(hHandle->xUart) {
           if(hHandle->xUart->hdmatx) {
-            CacheClean(hHandle->BufTx, sCount);
+            //CacheClean(hHandle->BufTx, sCount);
             HAL_UART_Transmit_DMA(hHandle->xUart, hHandle->BufTx, sCount);
           }
           else
@@ -511,7 +511,7 @@ void xDmaTxIrqHandler(UART_HandleTypeDef *huart)
           length++;
         }
         if(handle->xUart->hdmatx) {
-          CacheClean(handle->BufTx, length);
+          //CacheClean(handle->BufTx, length);
           HAL_UART_Transmit_DMA(handle->xUart, handle->BufTx, length);
         } else {
           HAL_UART_Transmit_IT(handle->xUart, handle->BufTx, length);
@@ -626,7 +626,7 @@ void xGetterInit(void)
     handle = &xHandles[i];
     if(handle->xUart) {
       if(handle->xUart->hdmarx) {
-        CacheClean(handle->BufRx, UART_DMA_BUFFER);
+        //CacheClean(handle->BufRx, UART_DMA_BUFFER);
         HAL_UART_Receive_DMA(handle->xUart, handle->BufRx, UART_DMA_BUFFER);
       } else {
         HAL_UART_Receive_IT(handle->xUart, handle->BufRx, 1);
@@ -661,7 +661,7 @@ void xGetterLoop(void)
           if(length > MAX_PACK_LEN) length = MAX_PACK_LEN;
           if(length > 0)
           {
-            CacheInvalidate(handle->BufRx, UART_DMA_BUFFER);
+            //CacheInvalidate(handle->BufRx, UART_DMA_BUFFER);
             for(i=0;i<length;i++)
             {
               tempbuffer[i] = handle->BufRx[dmasize-handle->RxPointer];
@@ -698,7 +698,7 @@ void xGetterLoop(void)
 
       if(handle->xUart) {
         if(handle->xUart->hdmatx) {
-          CacheClean(handle->BufTx, length);
+          //CacheClean(handle->BufTx, length);
           HAL_UART_Transmit_DMA(handle->xUart, handle->BufTx, length);
         }
         else
