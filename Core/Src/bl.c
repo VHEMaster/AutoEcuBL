@@ -16,19 +16,59 @@
 
 #define FW_ADDRESS  0x08010000
 #define FW_SIZE     0x00070000
-#define FW_CRC_POS  0x0807FFF0
+#define FW_CRC_POS  0x0807FF00
 
-static __IO uint8_t *bl_fw_pointer = (__IO uint8_t *)FW_ADDRESS;
-static __IO uint32_t *bl_crc_pointer = (__IO uint8_t *)FW_CRC_POS;
+#define BOOTFLAG_BOOTLOADER 0xDEADBEEF
+#define BOOTFLAG_NORMAL     0xABBADEAD
+#define BL_CTX_CHECK        0xABCDEF89
+
+static __IO uint32_t *bl_boot_flag_pointer = (__IO uint32_t *)0x20000000;
+static uint8_t *bl_fw_pointer = (uint8_t *)FW_ADDRESS;
+static bl_ctx_t *bl_ctx_pointer = (bl_ctx_t *)FW_CRC_POS;
 static bl_reset_func_t bl_reset_func = NULL;
 static uint32_t bl_flash_size = 0;
 static uint32_t bl_reset_request_time = 0;
 static uint8_t bl_flashing = 0;
 
-static void bl_switch_to_fw(void)
+static HAL_StatusTypeDef bl_check_fw(void)
 {
+  HAL_StatusTypeDef ret = HAL_ERROR;
+  bl_ctx_t ctx = *bl_ctx_pointer;
+  uint32_t crc;
+
+  do {
+    if(ctx.check != BL_CTX_CHECK) {
+      ret = HAL_ERROR;
+      break;
+    }
+
+    if(ctx.size > FW_SIZE) {
+      ret = HAL_ERROR;
+      break;
+    }
+
+    crc = CRC32_Generate((uint8_t *)bl_fw_pointer, ctx.size);
+
+    if(ctx.crc != crc) {
+      ret = HAL_ERROR;
+      break;
+    }
+
+  } while(0);
+
+  return ret;
+}
+
+static HAL_StatusTypeDef bl_switch_to_fw(void)
+{
+  HAL_StatusTypeDef ret;
   bl_reset_func_t appfunc;
   uint32_t resetisr = *(__IO uint32_t*) (FW_ADDRESS + 4);
+
+  ret = bl_check_fw();
+
+  if(ret != HAL_OK)
+    return ret;
 
   if(bl_reset_func)
     bl_reset_func();
@@ -42,7 +82,12 @@ static void bl_switch_to_fw(void)
 
 void bl_init(void)
 {
+  uint32_t bootflag = *bl_boot_flag_pointer;
 
+  if(bootflag != BOOTFLAG_BOOTLOADER) {
+    *bl_boot_flag_pointer = BOOTFLAG_NORMAL;
+    bl_switch_to_fw();
+  }
 }
 
 void bl_loop(void)
@@ -56,7 +101,9 @@ void bl_irq_slow_loop(void)
 
   if(bl_reset_request_time) {
     if(DelayDiff(now, bl_reset_request_time) >= 500000) {
+      *bl_boot_flag_pointer = BOOTFLAG_NORMAL;
       bl_switch_to_fw();
+      bl_reset_request_time = 0;
     }
   }
 }
@@ -73,6 +120,7 @@ void bl_register_reset_callback(bl_reset_func_t func)
 
 void bl_parse_command(sGetterHandle *xHandle, eTransChannels xChaSrc, uint8_t * msgBuf, uint32_t length)
 {
+  bl_ctx_t local_bl_ctx;
   uint32_t pointer;
   uint32_t offset;
   uint32_t size;
@@ -183,7 +231,17 @@ void bl_parse_command(sGetterHandle *xHandle, eTransChannels xChaSrc, uint8_t * 
 
       if(PK_FlashFinishResponse.ErrorCode == 0) {
         PK_FlashFinishResponse.crc = CRC32_Generate((uint8_t *)bl_fw_pointer, bl_flash_size);
-        res = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t)bl_crc_pointer, PK_FlashFinishResponse.crc);
+
+
+        local_bl_ctx.check = BL_CTX_CHECK;
+        local_bl_ctx.size = bl_flash_size;
+        local_bl_ctx.crc = PK_FlashFinishResponse.crc;
+
+        res = HAL_OK;
+        for(pointer = 0; pointer < sizeof(bl_ctx_t) && res == HAL_OK; pointer += sizeof(uint32_t)) {
+          memcpy(&data, &((uint8_t *)&local_bl_ctx)[pointer], sizeof(uint32_t));
+          res = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t)&((uint8_t *)bl_ctx_pointer)[pointer], (uint32_t)data);
+        }
 
         if(res != HAL_OK) {
           PK_FlashFinishResponse.ErrorCode = 10 + res;

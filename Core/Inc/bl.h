@@ -11,6 +11,13 @@
 #include "main.h"
 #include "xCommand.h"
 
+typedef struct {
+    uint32_t crc;
+    uint32_t size;
+    uint32_t check;
+    uint8_t rsvd[244];
+} bl_ctx_t;
+
 typedef void (*bl_reset_func_t)(void);
 
 void bl_init(void);
