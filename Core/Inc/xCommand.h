@@ -57,6 +57,7 @@ typedef struct
 }sGetterHandle ALIGNED(32);
 
 void xCommandInit(void);
+void xCommandSetChannel(eTransChannels xChannel);
 void xFifosInit(void);
 void xGetterInit(void);
 void xGetterLoop(void);

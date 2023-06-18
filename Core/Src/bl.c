@@ -12,6 +12,8 @@
 #include "delay.h"
 #include "xCommand.h"
 
+#include "stm32f7xx_ll_system.h"
+
 #include <string.h>
 
 #define FW_ADDRESS  0x08010000
@@ -29,6 +31,16 @@ static bl_reset_func_t bl_reset_func = NULL;
 static uint32_t bl_flash_size = 0;
 static uint32_t bl_reset_request_time = 0;
 static uint8_t bl_flashing = 0;
+
+typedef struct {
+    uint32_t idcode;
+    eTransChannels channel;
+} bl_idcode_to_channel_t;
+
+static bl_idcode_to_channel_t bl_idcode_to_channel[] = {
+    { 0x449, etrECU },
+    { 0x452, etrCTRL },
+};
 
 static HAL_StatusTypeDef bl_check_fw(void)
 {
@@ -83,11 +95,26 @@ static HAL_StatusTypeDef bl_switch_to_fw(void)
 void bl_init(void)
 {
   uint32_t bootflag = *bl_boot_flag_pointer;
+  uint32_t idcode;
+  eTransChannels channel = etrNone;
 
   if(bootflag != BOOTFLAG_BOOTLOADER) {
     *bl_boot_flag_pointer = BOOTFLAG_NORMAL;
     bl_switch_to_fw();
   }
+
+  idcode = LL_DBGMCU_GetDeviceID();
+  for(int i = 0; i < ITEMSOF(bl_idcode_to_channel); i++) {
+    if(bl_idcode_to_channel[i].idcode == idcode) {
+      channel = bl_idcode_to_channel[i].channel;
+      break;
+    }
+  }
+
+  if(channel != etrNone) {
+    xCommandSetChannel(channel);
+  }
+
 }
 
 void bl_loop(void)

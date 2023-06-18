@@ -52,13 +52,12 @@ STATIC_INLINE void exitcritical(void)
 #define RETRIES_TIMEOUT_CTRL 10000
 #define RETRIES_MAX 20
 
-#define SOURCE etrECU
-
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart5;
 
 static sGetterHandle xHandles[4];
+static eTransChannels xCurrentChannel = etrNone;
 
 STATIC_INLINE uint16_t calculatePacketId(void)
 {
@@ -100,7 +99,7 @@ STATIC_INLINE void packager(sGetterHandle* xHandle, const uint8_t* xMsgPtr, uint
         uint16_t aTotLen = xMsgLen ? xMsgLen + 8 + 2 : 8;
 
         xHandle->BufSender[0] = 0x55;
-        xHandle->BufSender[1] = SOURCE;
+        xHandle->BufSender[1] = xCurrentChannel;
         xHandle->BufSender[2] = xChaDest;
         xHandle->BufSender[3] = aTotLen & 0xFF;
         xHandle->BufSender[4] = (aTotLen >> 8) & 0xFF;
@@ -164,7 +163,7 @@ STATIC_INLINE void acker(sGetterHandle* xHandle, uint16_t aPacketId, eTransChann
         uint8_t header[8];
 
         header[0] = 0x55;
-        header[1] = SOURCE;
+        header[1] = xCurrentChannel;
         header[2] = xChaDest;
         header[3] = aTotLen & 0xFF;
         header[4] = (aTotLen >> 8) & 0xFF;
@@ -303,7 +302,7 @@ STATIC_INLINE void parser(sGetterHandle* hHandle, uint32_t xPacketId, uint32_t x
   uint8_t header[8];
 
 
-  if(xChaDest == etrECU)
+  if(xChaDest == xCurrentChannel)
   {
       if (xDataLen)
       {
@@ -354,6 +353,7 @@ STATIC_INLINE void parser(sGetterHandle* hHandle, uint32_t xPacketId, uint32_t x
 
       }
   }
+#if 0
   else if(xChaDest == etrCTRL || xChaDest == etrPC)
   {
     sCount = (xDataLen > 10) ? xDataLen : 8;
@@ -396,6 +396,7 @@ STATIC_INLINE void parser(sGetterHandle* hHandle, uint32_t xPacketId, uint32_t x
       }
     }
   }
+#endif
   else
   {
     sCount = (xDataLen > 10) ? xDataLen : 8;
@@ -604,6 +605,10 @@ void xCommandInit(void)
   xHandles[3].xUart = NULL;
 }
 
+void xCommandSetChannel(eTransChannels xChannel)
+{
+  xCurrentChannel = xChannel;
+}
 
 void xFifosInit(void)
 {
