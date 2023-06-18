@@ -12,6 +12,7 @@
 #include "delay.h"
 #include "defines.h"
 #include "usbd_cdc_if.h"
+#include "bl.h"
 
 #ifndef taskENTER_CRITICAL
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY 5
@@ -47,50 +48,17 @@ STATIC_INLINE void exitcritical(void)
 }
 #endif
 
-#define UART_DMA_BUFFER (MAX_PACK_LEN * 2)
 #define RETRIES_TIMEOUT_PC 50000
 #define RETRIES_TIMEOUT_CTRL 10000
 #define RETRIES_MAX 20
 
 #define SOURCE etrECU
 
-typedef struct
-{
-    uint8_t BufRx[UART_DMA_BUFFER];
-    uint8_t BufTx[MAX_PACK_LEN];
-    uint8_t xRxFifoBuf[MAX_PACK_LEN*4];
-    uint8_t xTxFifoBuf[MAX_PACK_LEN*4];
-    uint8_t BufSender[MAX_PACK_LEN];
-    uint8_t BufParser[MAX_PACK_LEN];
-    UART_HandleTypeDef * xUart;
-    eTransChannels xChannels[4];
-
-    volatile uint16_t ReceivedAckPacket;
-    volatile uint16_t RetriesPacket;
-    volatile uint16_t NeedAckPacket;
-    volatile uint16_t NeededAckPacketId;
-    volatile uint32_t LastNotAckedTime;
-    volatile uint8_t TxBusy;
-    volatile eTransChannels TxDest;
-
-    uint16_t ReceivedPackets[etrCount][10];
-    uint16_t ReceivedPacketId[etrCount];
-    sProFIFO xTxFifo;
-    sProFIFO xRxFifo;
-    uint32_t dataReceiving;
-    uint32_t dataLen;
-    uint16_t packetId;
-    uint32_t RxPointer;
-    uint8_t ErrorFlag;
-}sGetterHandle ALIGNED(32);
-
+extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart5;
-extern UART_HandleTypeDef huart8;
 
-static sGetterHandle xHandles[] = {
-    {{0},{0},{0},{0},{0},{0}, &huart5, {etrCTRL,etrNone}, 1,0,0,0,0,0, etrNone },
-    {{0},{0},{0},{0},{0},{0}, NULL, {etrPC,etrNone}, 1,0,0,0,0,0, etrNone },
-};
+static sGetterHandle xHandles[4];
 
 STATIC_INLINE uint16_t calculatePacketId(void)
 {
@@ -235,11 +203,8 @@ STATIC_INLINE void acker(sGetterHandle* xHandle, uint16_t aPacketId, eTransChann
     }
 }
 
-void xSenderRaw(eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLen)
+void xSenderRaw(sGetterHandle *xHandle, eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLen)
 {
-  sGetterHandle * xHandle = NULL;
-  xHandle = findHandleForChannel(xChaDest);
-
   uint8_t handled = 0;
 
   if(!protIsSome(&xHandle->xTxFifo))
@@ -273,16 +238,9 @@ void xSenderRaw(eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLe
   }
 }
 
-int8_t xSender(eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLen)
+int8_t xSender(sGetterHandle *handle, eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLen)
 {
   uint32_t now = Delay_Tick;
-
-  sGetterHandle * handle = NULL;
-
-  handle = findHandleForChannel(xChaDest);
-
-  if(!handle)
-    return -2;
 
   taskENTER_CRITICAL();
   if(handle->TxDest != etrNone && xChaDest != handle->TxDest) {
@@ -337,138 +295,115 @@ int8_t xSender(eTransChannels xChaDest, const uint8_t* xMsgPtr, uint32_t xMsgLen
 
 }
 
-STATIC_INLINE void parser(sProFIFO* xFifo, uint32_t xPacketId, uint32_t xDataLen, eTransChannels xChaSrc, eTransChannels xChaDest) {
+STATIC_INLINE void parser(sGetterHandle* hHandle, uint32_t xPacketId, uint32_t xDataLen, eTransChannels xChaSrc, eTransChannels xChaDest) {
 
   uint32_t aCount;
   uint8_t data, idis = 0;
   uint32_t sCount;
-  sGetterHandle * hDest = NULL;
   uint8_t header[8];
 
-  hDest = findHandleForChannel(xChaSrc);
-  if(!hDest)
-    return;
 
-  switch (xChaDest)
+  if(xChaDest == etrECU)
   {
-
-      case etrECU:
+      if (xDataLen)
       {
-          if (xDataLen)
+        for (aCount = 0; aCount < 8; aCount++)
+            protPull(&hHandle->xRxFifo, &header[aCount]);
+
+          for (aCount = 0; aCount < xDataLen - 10; aCount++)
           {
-            for (aCount = 0; aCount < 8; aCount++)
-                protPull(xFifo, &header[aCount]);
-
-              for (aCount = 0; aCount < xDataLen - 10; aCount++)
-              {
-                protPull(xFifo, &data);
-                hDest->BufParser[aCount]=data;
-              }
-              protPull(xFifo, &data);
-              protPull(xFifo, &data);
-
-              hDest->BufParser[aCount]=0;
-
-              if(hDest) acker(hDest,xPacketId,xChaSrc);
-
-              for(int i = 0; i < 10; i++)
-              {
-                if(hDest->ReceivedPackets[xChaSrc][i] == xPacketId)
-                {
-                  idis = 1;
-                  break;
-                }
-              }
-
-              if(!idis)
-              {
-                hDest->ReceivedPackets[xChaSrc][hDest->ReceivedPacketId[xChaSrc]] = xPacketId;
-                if(++hDest->ReceivedPacketId[xChaSrc] >= 10) hDest->ReceivedPacketId[xChaSrc] = 0;
-                ecu_parse_command(xChaSrc, hDest->BufParser, aCount);
-              }
-
-          // Signal package
+            protPull(&hHandle->xRxFifo, &data);
+            hHandle->BufParser[aCount]=data;
           }
-          else
+          protPull(&hHandle->xRxFifo, &data);
+          protPull(&hHandle->xRxFifo, &data);
+
+          hHandle->BufParser[aCount]=0;
+
+          if(hHandle) acker(hHandle,xPacketId,xChaSrc);
+
+          for(int i = 0; i < 10; i++)
           {
-              for (aCount = 0; aCount < 8; aCount++)
-                protPull(xFifo, &header[aCount]);
-
-              taskENTER_CRITICAL();
-              if(hDest->NeedAckPacket && hDest->NeededAckPacketId != 0 && hDest->NeededAckPacketId == xPacketId && !hDest->ReceivedAckPacket)
-              {
-                hDest->ReceivedAckPacket = 1;
-              }
-              taskEXIT_CRITICAL();
-
-          }
-
-          break;
-      }
-      case etrCTRL:
-      case etrPC:
-      {
-        //This is NOT supposed to be like that, so drop
-        if(xChaDest != etrCTRL || xChaSrc != etrPC)
-        {
-          sCount = (xDataLen > 10) ? xDataLen : 8;
-
-          if(hDest)
-          {
-
-            uint8_t handled = 0;
-            if(!protIsSome(&hDest->xTxFifo))
+            if(hHandle->ReceivedPackets[xChaSrc][i] == xPacketId)
             {
-              taskENTER_CRITICAL();
-              if(!hDest->TxBusy)
-              {
-                hDest->TxBusy = 1;
-                handled = 1;
-                taskEXIT_CRITICAL();
-
-                for (aCount = 0; aCount < sCount; aCount++)
-                {
-                  protPull(xFifo, &hDest->BufTx[aCount]);
-                }
-
-                if(hDest->xUart) {
-                  if(hDest->xUart->hdmatx) {
-                    CacheClean(hDest->BufTx, sCount);
-                    HAL_UART_Transmit_DMA(hDest->xUart, hDest->BufTx, sCount);
-                  }
-                  else
-                    HAL_UART_Transmit_IT(hDest->xUart, hDest->BufTx, sCount);
-                } else {
-                  CDC_Transmit(hDest->BufTx, sCount);
-                }
-              }
-              else taskEXIT_CRITICAL();
+              idis = 1;
+              break;
             }
-
-            if(!handled)
-            {
-              for (aCount = 0; aCount < sCount; aCount++)
-              {
-                protPull(xFifo, &data);
-                protPush(&hDest->xTxFifo, &data);
-              }
-            }
-            break;
           }
-        }
-      }
-      /* no break */
 
-      default:
+          if(!idis)
+          {
+            hHandle->ReceivedPackets[xChaSrc][hHandle->ReceivedPacketId[xChaSrc]] = xPacketId;
+            if(++hHandle->ReceivedPacketId[xChaSrc] >= 10) hHandle->ReceivedPacketId[xChaSrc] = 0;
+            bl_parse_command(hHandle, xChaSrc, hHandle->BufParser, aCount);
+          }
+
+      // Signal package
+      }
+      else
       {
-        sCount = (xDataLen > 10) ? xDataLen : 8;
+          for (aCount = 0; aCount < 8; aCount++)
+            protPull(&hHandle->xRxFifo, &header[aCount]);
+
+          taskENTER_CRITICAL();
+          if(hHandle->NeedAckPacket && hHandle->NeededAckPacketId != 0 && hHandle->NeededAckPacketId == xPacketId && !hHandle->ReceivedAckPacket)
+          {
+            hHandle->ReceivedAckPacket = 1;
+          }
+          taskEXIT_CRITICAL();
+
+      }
+  }
+  else if(xChaDest == etrCTRL || xChaDest == etrPC)
+  {
+    sCount = (xDataLen > 10) ? xDataLen : 8;
+
+    uint8_t handled = 0;
+    if(!protIsSome(&hHandle->xTxFifo))
+    {
+      taskENTER_CRITICAL();
+      if(!hHandle->TxBusy)
+      {
+        hHandle->TxBusy = 1;
+        handled = 1;
+        taskEXIT_CRITICAL();
+
         for (aCount = 0; aCount < sCount; aCount++)
         {
-          protPull(xFifo, &data);
+          protPull(&hHandle->xRxFifo, &hHandle->BufTx[aCount]);
         }
-        break;
 
+        if(hHandle->xUart) {
+          if(hHandle->xUart->hdmatx) {
+            CacheClean(hHandle->BufTx, sCount);
+            HAL_UART_Transmit_DMA(hHandle->xUart, hHandle->BufTx, sCount);
+          }
+          else
+            HAL_UART_Transmit_IT(hHandle->xUart, hHandle->BufTx, sCount);
+        } else {
+          CDC_Transmit(hHandle->BufTx, sCount);
+        }
       }
+      else taskEXIT_CRITICAL();
+    }
+
+    if(!handled)
+    {
+      for (aCount = 0; aCount < sCount; aCount++)
+      {
+        protPull(&hHandle->xRxFifo, &data);
+        protPush(&hHandle->xTxFifo, &data);
+      }
+    }
+  }
+  else
+  {
+    sCount = (xDataLen > 10) ? xDataLen : 8;
+    for (aCount = 0; aCount < sCount; aCount++)
+    {
+      protPull(&hHandle->xRxFifo, &data);
+    }
+
   }
 }
 
@@ -509,7 +444,7 @@ static void Getter(sGetterHandle * handle)
         if (countCRC16(handle,dataLen) == lookByte(xFifo,dataLen-2) + (lookByte(xFifo,dataLen-1) << 8))
         {
             // Got True package
-            parser(xFifo,packetId,dataLen,lookByte(xFifo,1),lookByte(xFifo,2));
+            parser(handle,packetId,dataLen,lookByte(xFifo,1),lookByte(xFifo,2));
         }
         else { dataSkip=1; errcodes[0]++; } // Wrong CRC16, so skip 1 byte
         dataReceiving = 0;
@@ -535,7 +470,7 @@ static void Getter(sGetterHandle * handle)
               else
               {
                   // Got ShortPackage (Header Only)
-                  parser(xFifo,packetId,0,lookByte(xFifo,1),lookByte(xFifo,2));
+                  parser(handle,packetId,0,lookByte(xFifo,1),lookByte(xFifo,2));
               }
           }
           else { dataSkip=1; errcodes[1]++; } // Wrong data length or packet id, so skip 1 byte
@@ -652,15 +587,33 @@ void xDmaErIrqHandler(UART_HandleTypeDef *huart)
   }
 }
 
+void xCommandInit(void)
+{
+  memset(xHandles, 0, sizeof(xHandles));
+
+  for(int i = 0; i < sizeof(xHandles) / sizeof(xHandles[0]); i++)
+  {
+    xHandles[i].ReceivedAckPacket = 1;
+    xHandles[i].xChannels[0] = etrPC;
+    xHandles[i].xChannels[1] = etrNone;
+  }
+
+  xHandles[0].xUart = &huart1;
+  xHandles[1].xUart = &huart3;
+  xHandles[2].xUart = &huart5;
+  xHandles[3].xUart = NULL;
+}
+
 
 void xFifosInit(void)
 {
+  memset(xHandles, 0, sizeof(xHandles));
+
   for(int i = 0; i < sizeof(xHandles) / sizeof(xHandles[0]); i++)
   {
-    protInit(&xHandles[i].xTxFifo,xHandles[i].xTxFifoBuf,1,MAX_PACK_LEN*4);
-    protInit(&xHandles[i].xRxFifo,xHandles[i].xRxFifoBuf,1,MAX_PACK_LEN*4);
-    xHandles[i].RxPointer = 0xFFFFFFFF;
-    xHandles[i].ErrorFlag = 0;
+    xHandles[i].ReceivedAckPacket = 1;
+    xHandles[i].xChannels[0] = etrPC;
+    xHandles[i].xChannels[1] = etrNone;
   }
 }
 

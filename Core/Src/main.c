@@ -19,6 +19,12 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
+#include "crc.h"
+#include "packets.h"
+#include "xCommand.h"
+#include "defines.h"
+#include "delay.h"
+#include "bl.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -41,10 +47,13 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+IWDG_HandleTypeDef hiwdg;
+
 CRC_HandleTypeDef hcrc;
 
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart1;
@@ -68,72 +77,125 @@ static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_CRC_Init(void);
+static void MX_IWDG_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
+#define SENDING_QUEUE_SIZE (MAX_PACK_LEN*4)
+#define SENDING_BUFFER_SIZE (MAX_PACK_LEN)
 
-/* USER CODE END 0 */
+static eTransChannels PK_ECU_TxDests[] = {etrPC};
+static uint8_t PK_ECU_TxQueueBuffers[ITEMSOF(PK_ECU_TxDests)][SENDING_QUEUE_SIZE] = {{0}};
+static uint8_t PK_ECU_TxSendingBuffers[ITEMSOF(PK_ECU_TxDests)][SENDING_BUFFER_SIZE] = {{0}};
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
+STATIC_INLINE void slow_loop(void)
+{
+  bl_irq_slow_loop();
+}
+
+STATIC_INLINE void fast_loop(void)
+{
+  bl_irq_fast_loop();
+}
+
+INLINE ITCM_FUNC void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim == &htim3) {
+    fast_loop();
+  } else if (htim == &htim4) {
+    slow_loop();
+  }
+}
+
+INLINE void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if(huart == &huart1 || huart == &huart3 || huart == &huart5) {
+    xDmaErIrqHandler(huart);
+  }
+}
+
+INLINE void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if(huart == &huart1 || huart == &huart3 || huart == &huart5) {
+    xDmaTxIrqHandler(huart);
+  }
+}
+
+INLINE void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+
+}
+
 int main(void)
 {
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* Enable I-Cache---------------------------------------------------------*/
   SCB_EnableICache();
 
-  /* Enable D-Cache---------------------------------------------------------*/
   SCB_EnableDCache();
 
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
   SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_UART5_Init();
   MX_DMA_Init();
+  MX_UART5_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
   MX_CRC_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_TIM5_Init();
   MX_USB_DEVICE_Init();
-  /* USER CODE BEGIN 2 */
 
-  /* USER CODE END 2 */
 
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+  //Freeze peripherial during debug
+  DBGMCU->APB1FZ = 0x7E01BFF;
+  DBGMCU->APB2FZ = 0x70003;
+
+  __HAL_DBGMCU_FREEZE_TIM5();
+  __HAL_DBGMCU_FREEZE_IWDG();
+
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_BKPSRAM_CLK_ENABLE();
+  HAL_PWREx_EnableBkUpReg();
+
+  MX_IWDG_Init();
+
+  DelayInit(&htim5);
+
+  CRC16_Init(&hcrc);
+
+  PK_SenderInit();
+  xCommandInit();
+  xFifosInit();
+  xGetterInit();
+
+  for(int i = 0; i < ITEMSOF(PK_ECU_TxDests); i++)
+    if(PK_ECU_TxDests[i])
+      PK_Sender_RegisterDestination(PK_ECU_TxDests[i],
+          PK_ECU_TxQueueBuffers[i], ITEMSOF(PK_ECU_TxQueueBuffers[i]),
+          PK_ECU_TxSendingBuffers[i], ITEMSOF(PK_ECU_TxSendingBuffers[i]));
+
+  HAL_TIM_Base_Start_IT(&htim3);
+  HAL_TIM_Base_Start_IT(&htim4);
+
+  MX_USB_DEVICE_Init();
+
+  bl_init();
+
   while (1)
   {
-    /* USER CODE END WHILE */
+    bl_loop();
 
-    /* USER CODE BEGIN 3 */
+    xGetterLoop();
+    PK_SenderLoop();
+
+    HAL_IWDG_Refresh(&hiwdg);
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -153,7 +215,8 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -213,6 +276,34 @@ static void MX_CRC_Init(void)
   /* USER CODE BEGIN CRC_Init 2 */
 
   /* USER CODE END CRC_Init 2 */
+
+}
+
+/**
+ * @brief IWDG Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_16;
+  hiwdg.Init.Window = 4095;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -305,6 +396,32 @@ static void MX_TIM4_Init(void)
   /* USER CODE END TIM4_Init 2 */
 
 }
+
+/**
+ * @brief TIM5 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM5_Init(void)
+{
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 72 - 1;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = DelayMask;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+
+}
+
 
 /**
   * @brief UART5 Initialization Function
