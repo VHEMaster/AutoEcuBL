@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2023 STMicroelectronics.
+  * Copyright (c) 2022 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -179,6 +179,7 @@ static int8_t CDC_DeInit_FS(void)
   */
 static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 {
+  uint32_t baudrate = 9600;
   /* USER CODE BEGIN 5 */
   switch(cmd)
   {
@@ -224,6 +225,14 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
     case CDC_GET_LINE_CODING:
+      pbuf[0] = (uint8_t)(baudrate);
+      pbuf[1] = (uint8_t)(baudrate >> 8);
+      pbuf[2] = (uint8_t)(baudrate >> 16);
+      pbuf[3] = (uint8_t)(baudrate >> 24);
+      pbuf[4] = 0;
+      pbuf[5] = 0;
+      pbuf[6] = 8;
+      break;
 
     break;
 
@@ -261,6 +270,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  CDC_ReceiveCallback(Buf, *Len);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
@@ -308,11 +318,39 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 {
   uint8_t result = USBD_OK;
   /* USER CODE BEGIN 13 */
+  CDC_TxCpltCallback();
   UNUSED(Buf);
   UNUSED(Len);
   UNUSED(epnum);
   /* USER CODE END 13 */
   return result;
+}
+
+__weak void CDC_TxCpltCallback(void)
+{
+
+}
+
+void CDC_Transmit(uint8_t *buffer, uint32_t length)
+{
+  CDC_Transmit_FS(buffer, length);
+}
+
+uint8_t CDC_IsTxBusy(void)
+{
+  uint8_t result = USBD_OK;
+  /* USER CODE BEGIN 7 */
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+  if (hcdc->TxState != 0){
+    return USBD_BUSY;
+  }
+  return result;
+}
+
+__weak void CDC_ReceiveCallback(uint8_t *buffer, uint32_t length)
+{
+  UNUSED(buffer);
+  UNUSED(length);
 }
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */

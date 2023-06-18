@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2023 STMicroelectronics.
+  * Copyright (c) 2022 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -110,6 +110,11 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
 
 /* USER CODE END EXPORTED_FUNCTIONS */
+
+uint8_t CDC_IsTxBusy(void);
+void CDC_TxCpltCallback(void);
+void CDC_Transmit(uint8_t *buffer, uint32_t length);
+void CDC_ReceiveCallback(uint8_t *buffer, uint32_t length);
 
 /**
   * @}
