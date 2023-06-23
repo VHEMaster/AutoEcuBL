@@ -128,7 +128,9 @@ INLINE void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 
 INLINE void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-
+  if(huart == &huart1 || huart == &huart3 || huart == &huart5) {
+    xDmaRxIrqHandler(huart);
+  }
 }
 
 int main(void)
@@ -607,11 +609,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
 
-  GPIO_InitStruct.Pin = GPIO_PIN_All;
+  /* Disable all except SWD */
+  GPIO_InitStruct.Pin = GPIO_PIN_All & ~(GPIO_PIN_13 | GPIO_PIN_14);
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
 
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_All;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
