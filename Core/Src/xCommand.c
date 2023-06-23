@@ -612,13 +612,12 @@ void xCommandSetChannel(eTransChannels xChannel)
 
 void xFifosInit(void)
 {
-  memset(xHandles, 0, sizeof(xHandles));
-
   for(int i = 0; i < sizeof(xHandles) / sizeof(xHandles[0]); i++)
   {
-    xHandles[i].ReceivedAckPacket = 1;
-    xHandles[i].xChannels[0] = etrPC;
-    xHandles[i].xChannels[1] = etrNone;
+    protInit(&xHandles[i].xTxFifo,xHandles[i].xTxFifoBuf,1,MAX_PACK_LEN*4);
+    protInit(&xHandles[i].xRxFifo,xHandles[i].xRxFifoBuf,1,MAX_PACK_LEN*4);
+    xHandles[i].RxPointer = 0xFFFFFFFF;
+    xHandles[i].ErrorFlag = 0;
   }
 }
 
