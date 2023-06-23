@@ -11,6 +11,7 @@
 #include "packets.h"
 #include "delay.h"
 #include "xCommand.h"
+#include "failures.h"
 
 #include "stm32f7xx_ll_system.h"
 
@@ -30,7 +31,9 @@ static bl_ctx_t *bl_ctx_pointer = (bl_ctx_t *)FW_CRC_POS;
 static bl_reset_func_t bl_reset_func = NULL;
 static uint32_t bl_flash_size = 0;
 static uint32_t bl_reset_request_time = 0;
+static uint32_t bl_reset_request_mode = 0;
 static uint8_t bl_flashing = 0;
+static uint8_t bl_check_bitmap[CHECK_BITMAP_SIZE] = {0};
 
 typedef struct {
     uint32_t idcode;
@@ -41,6 +44,13 @@ static bl_idcode_to_channel_t bl_idcode_to_channel[] = {
     { 0x449, etrECU },
     { 0x452, etrCTRL },
 };
+
+
+#define CHECK_STATUS(iserror, cod, link) \
+  if((link)) { \
+    bl_check_bitmap[cod >> 3] |= 1 << (cod & 7); \
+    iserror |= 1; \
+  }
 
 static HAL_StatusTypeDef bl_check_fw(void)
 {
@@ -96,6 +106,7 @@ void bl_init(void)
 {
   uint32_t bootflag = *bl_boot_flag_pointer;
   uint32_t idcode;
+  uint8_t iserror = 0;
   eTransChannels channel = etrNone;
 
   if(bootflag != BOOTFLAG_BOOTLOADER) {
@@ -115,6 +126,9 @@ void bl_init(void)
     xCommandSetChannel(channel);
   }
 
+  memset(bl_check_bitmap, 0, sizeof(bl_check_bitmap));
+  CHECK_STATUS(iserror, CheckBootLoaderMode, 1);
+
 }
 
 void bl_loop(void)
@@ -128,8 +142,10 @@ void bl_irq_slow_loop(void)
 
   if(bl_reset_request_time) {
     if(DelayDiff(now, bl_reset_request_time) >= 500000) {
-      *bl_boot_flag_pointer = BOOTFLAG_NORMAL;
-      bl_switch_to_fw();
+      if(bl_reset_request_mode == 0)
+        *bl_boot_flag_pointer = BOOTFLAG_NORMAL;
+      else *bl_boot_flag_pointer = BOOTFLAG_BOOTLOADER;
+      NVIC_SystemReset();
       bl_reset_request_time = 0;
     }
   }
@@ -145,6 +161,7 @@ void bl_register_reset_callback(bl_reset_func_t func)
   bl_reset_func = func;
 }
 
+
 void bl_parse_command(sGetterHandle *xHandle, eTransChannels xChaSrc, uint8_t * msgBuf, uint32_t length)
 {
   bl_ctx_t local_bl_ctx;
@@ -159,6 +176,31 @@ void bl_parse_command(sGetterHandle *xHandle, eTransChannels xChaSrc, uint8_t * 
       PK_Copy(&PK_Ping, msgBuf);
       PK_Pong.RandomPong = PK_Ping.RandomPing;
       PK_SendCommand(xHandle, xChaSrc, &PK_Pong, sizeof(PK_Pong));
+      break;
+
+    case PK_StatusRequestID :
+      PK_Copy(&PK_StatusRequest, msgBuf);
+      memcpy(PK_StatusResponse.CheckBitmap, bl_check_bitmap, CHECK_BITMAP_SIZE);
+      memcpy(PK_StatusResponse.CheckBitmapRecorded, bl_check_bitmap, CHECK_BITMAP_SIZE);
+      PK_SendCommand(xHandle, xChaSrc, &PK_StatusResponse, sizeof(PK_StatusResponse));
+      break;
+
+    case PK_ParametersRequestID :
+      PK_Copy(&PK_ParametersRequest, msgBuf);
+      memset(&PK_ParametersResponse.Parameters, 0, sizeof(PK_ParametersResponse.Parameters));
+      PK_SendCommand(xHandle, xChaSrc, &PK_ParametersResponse, sizeof(PK_ParametersResponse));
+      break;
+
+    case PK_ResetStatusRequestID :
+      PK_Copy(&PK_StatusRequest, msgBuf);
+      PK_ResetStatusResponse.ErrorCode = 0;
+      PK_SendCommand(xHandle, xChaSrc, &PK_ResetStatusResponse, sizeof(PK_ResetStatusResponse));
+      break;
+
+    case PK_ForceParametersDataID :
+      PK_Copy(&PK_ForceParametersData, msgBuf);
+      PK_ForceParametersDataAcknowledge.ErrorCode = 0;
+      PK_SendCommand(xHandle, xChaSrc, &PK_ForceParametersDataAcknowledge, sizeof(PK_ForceParametersDataAcknowledge));
       break;
 
     case PK_FlashMemoryRequestID :
@@ -285,7 +327,10 @@ void bl_parse_command(sGetterHandle *xHandle, eTransChannels xChaSrc, uint8_t * 
 
     case PK_ResetRequestID :
       PK_Copy(&PK_ResetRequest, msgBuf);
+      PK_ResetResponse.mode = PK_ResetRequest.mode;
+      PK_ResetResponse.ErrorCode = 0;
 
+      bl_reset_request_mode = PK_ResetResponse.mode;
       bl_reset_request_time = Delay_Tick;
       if(!bl_reset_request_time)
         bl_reset_request_time++;
